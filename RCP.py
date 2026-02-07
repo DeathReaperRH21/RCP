@@ -1,75 +1,47 @@
 import pandas as pd
 import numpy as np
 
-# Load data
-df = pd.read_excel("ILIDataV2.xlsx", sheet_name=0)
+# Load your spreadsheet (adjust sheet_name if necessary)
+df_2022 = pd.read_excel('ILIDataV2.xlsx', sheet_name='2022')
+df_2015 = pd.read_excel('ILIDataV2.xlsx', sheet_name='2015')
 
-# Step 1: Handle missing values (example: fill with NaN for consistency)
-df = df.replace({'': np.nan, 'N/A': np.nan})
+# Standardize the feature type column
+df_2022.rename(columns={'Event Description': 'feature_type'}, inplace=True)
+df_2015.rename(columns={'Event Description': 'feature_type'}, inplace=True)
 
-# Step 2: Normalize feature names for consistency
-def clean_feature_type(val):
-    if pd.isnull(val): return val
-    val = val.strip().lower().replace('-', ' ').replace('_', ' ')
-    # Example mappings, extend as needed
-    if 'girth weld' in val:
-        return 'girth weld'
-    if 'field bend' in val or 'bend' in val:
-        return 'field bend'
-    if 'metal loss' in val:
-        if 'manufacturing' in val:
-            return 'metal loss manufacturing anomaly'
-        else:
-            return 'metal loss'
-    if 'seam weld' in val:
-        return 'seam weld manufacturing anomaly'
-    if 'cluster' in val:
-        return 'cluster'
-    return val
-df['feature_type'] = df['feature_type'].apply(clean_feature_type)
+# --- Extract Girth Welds from Each Sheet ---
 
-# Step 3: Standardize clock position (handle decimal vs time strings)
-def normalize_clock(clock_val):
-    # Accepts float, or string in 'H:MM' format
-    if pd.isnull(clock_val):
-        return np.nan
-    if isinstance(clock_val, float) or isinstance(clock_val, int):
-        return float(clock_val)
-    if ':' in str(clock_val):
-        parts = str(clock_val).split(':')
-        h = float(parts[0])
-        m = float(parts[1]) / 60
-        return h + m
-    try:
-        return float(clock_val)
-    except:
-        return np.nan
-df['clock_pos_norm'] = df['clock_pos'].apply(normalize_clock)
+#print(df_2015.columns.tolist())
 
-# Step 4: Flag anomalies by type and comment keywords
-anomaly_terms = ['metal loss', 'cluster', 'manufacturing anomaly', 'seam weld']
-def is_anomaly(row):
-    if pd.isnull(row['feature_type']):
-        return False
-    for term in anomaly_terms:
-        if term in row['feature_type']:
-            return True
-    return False
-df['is_anomaly'] = df.apply(is_anomaly, axis=1)
+# For 2022: use the odometer field 'ILI Wheel Count  [ft.]'
+girth_welds_2022 = df_2022[df_2022['feature_type'].str.contains('Girth', case=False, na=False)]
+positions_2022 = girth_welds_2022['ILI Wheel Count \n[ft.]'].astype(float).tolist()
 
-# Step 5: Detect outliers in measurements (e.g., for 'depth')
-for col in ['depth', 'length', 'width']:
-    if col in df.columns:
-        col_mean = df[col].mean()
-        col_std = df[col].std()
-        df[f'{col}_outlier'] = (df[col] - col_mean).abs() > 2 * col_std
+# For 2015: use absolute position 'log dist'
+girth_welds_2015 = df_2015[df_2015['feature_type'].str.contains('Girth', case=False, na=False)]
+positions_2015 = girth_welds_2015['Log Dist. [ft]'].astype(float).tolist()
 
-# Step 6: (Optional) Standardize units if needed
-# For example, if you find inches ("in") and mm ("mm"), convert as desired
+# --- Alignment Function ---
 
-# Step 7: Filter results
-anomalies = df[df['is_anomaly'] | df.filter(like='_outlier').any(axis=1)]
-print(anomalies)
+def align_welds(reference_positions, target_positions, tolerance=2.0):
+    """Align positions from target to reference if they are within a set tolerance"""
+    mapping = []
+    for tgt_pos in target_positions:
+        diffs = np.abs(np.array(reference_positions) - tgt_pos)
+        min_diff = np.min(diffs)
+        if min_diff <= tolerance:
+            match_pos = reference_positions[np.argmin(diffs)]
+            mapping.append((tgt_pos, match_pos))
+    return mapping
 
-# Save anomalies for review
-anomalies.to_csv("ILI_detected_anomalies.csv", index=False)
+# Align the 2022 welds to 2015 welds (change tolerance as needed)
+aligned_welds = align_welds(positions_2015, positions_2022, tolerance=2.0)
+
+# Print the result
+for us_pos, log_pos in aligned_welds:
+    print(f"2022 Weld at {us_pos:.2f} ft aligned to 2015 Weld at {log_pos:.2f} ft")
+
+aligned_welds_df = pd.DataFrame(aligned_welds, columns=['2022 Position', '2015 Position'])
+aligned_welds_df.to_csv('GirthWelds.csv', index=False)
+
+# You can use these mapping points to align/analyze anomalies or features across the datasets.
